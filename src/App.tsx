@@ -1,256 +1,701 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { CheckCircle2, XCircle, Trophy, Play, RotateCcw, Camera, AlertCircle } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
+import {
+  AlertCircle,
+  BookOpen,
+  Camera,
+  CheckCircle2,
+  Play,
+  Plus,
+  RotateCcw,
+  Trash2,
+  Trophy,
+  XCircle
+} from 'lucide-react';
 import HeadTracker from './components/HeadTracker';
-import { QUESTIONS } from './constants';
-import { GameState, GameStats, Question } from './types';
+import { DEFAULT_LESSON } from './constants';
+import { GameState, GameStats, Lesson, Question, QuestionOption, TiltDirection } from './types';
+
+const LESSON_STORAGE_KEY = 'head-tilt-quiz-lesson';
+const TILT_HOLD_DURATION_MS = 1000;
+const RESULT_DELAY_MS = 2000;
+
+const cloneLesson = (lesson: Lesson): Lesson => ({
+  title: lesson.title,
+  questions: lesson.questions.map((question) => ({ ...question }))
+});
+
+const isQuestionComplete = (question: Question) =>
+  question.text.trim().length > 0 &&
+  question.leftOption.trim().length > 0 &&
+  question.rightOption.trim().length > 0;
+
+const isLessonReady = (lesson: Lesson) =>
+  lesson.title.trim().length > 0 &&
+  lesson.questions.length > 0 &&
+  lesson.questions.every(isQuestionComplete);
+
+const getNextQuestionId = (questions: Question[]) =>
+  questions.reduce((maxId, question) => Math.max(maxId, question.id), 0) + 1;
+
+const normalizeStoredQuestion = (value: unknown, index: number): Question => {
+  const record = typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+
+  return {
+    id: typeof record.id === 'number' && Number.isFinite(record.id) ? record.id : index + 1,
+    text: typeof record.text === 'string' ? record.text : '',
+    leftOption: typeof record.leftOption === 'string' ? record.leftOption : '',
+    rightOption: typeof record.rightOption === 'string' ? record.rightOption : '',
+    correctOption: record.correctOption === 'right' ? 'right' : 'left'
+  };
+};
+
+const loadLessonDraft = (): Lesson => {
+  if (typeof window === 'undefined') {
+    return cloneLesson(DEFAULT_LESSON);
+  }
+
+  try {
+    const rawLesson = window.localStorage.getItem(LESSON_STORAGE_KEY);
+    if (!rawLesson) {
+      return cloneLesson(DEFAULT_LESSON);
+    }
+
+    const parsedLesson = JSON.parse(rawLesson) as Record<string, unknown>;
+    const draftQuestions = Array.isArray(parsedLesson.questions)
+      ? parsedLesson.questions.map(normalizeStoredQuestion)
+      : [];
+
+    return {
+      title: typeof parsedLesson.title === 'string' ? parsedLesson.title : DEFAULT_LESSON.title,
+      questions: draftQuestions.length > 0 ? draftQuestions : cloneLesson(DEFAULT_LESSON).questions
+    };
+  } catch (error) {
+    console.error('Error loading lesson draft:', error);
+    return cloneLesson(DEFAULT_LESSON);
+  }
+};
+
+const createBlankQuestion = (id: number): Question => ({
+  id,
+  text: '',
+  leftOption: '',
+  rightOption: '',
+  correctOption: 'left'
+});
 
 export default function App() {
   const [gameState, setGameState] = useState<GameState>('START');
+  const [lessonDraft, setLessonDraft] = useState<Lesson>(() => loadLessonDraft());
+  const [activeLesson, setActiveLesson] = useState<Lesson>(() => cloneLesson(DEFAULT_LESSON));
   const [stats, setStats] = useState<GameStats>({
     score: 0,
-    totalQuestions: QUESTIONS.length,
+    totalQuestions: DEFAULT_LESSON.questions.length,
     currentQuestionIndex: 0
   });
-  const [currentTilt, setCurrentTilt] = useState<'left' | 'right' | 'center'>('center');
-  const [tiltProgress, setTiltProgress] = useState(0); // 0 to 100
-  const [lastResult, setLastResult] = useState<{ correct: boolean; option: 'left' | 'right' } | null>(null);
-  
-  const tiltTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const [currentTilt, setCurrentTilt] = useState<TiltDirection>('center');
+  const [tiltProgress, setTiltProgress] = useState(0);
+  const [lastResult, setLastResult] = useState<{
+    correct: boolean;
+    option: QuestionOption;
+  } | null>(null);
 
-  const currentQuestion = QUESTIONS[stats.currentQuestionIndex];
+  const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const resultTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const selectionLockedRef = useRef(false);
 
-  const handleTilt = useCallback((tilt: 'left' | 'right' | 'center') => {
+  const currentQuestion = activeLesson.questions[stats.currentQuestionIndex];
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    window.localStorage.setItem(LESSON_STORAGE_KEY, JSON.stringify(lessonDraft));
+  }, [lessonDraft]);
+
+  useEffect(() => {
+    return () => {
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current);
+      }
+
+      if (resultTimerRef.current) {
+        clearTimeout(resultTimerRef.current);
+      }
+    };
+  }, []);
+
+  const clearProgressInterval = useCallback(() => {
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+      progressIntervalRef.current = null;
+    }
+  }, []);
+
+  const clearResultTimer = useCallback(() => {
+    if (resultTimerRef.current) {
+      clearTimeout(resultTimerRef.current);
+      resultTimerRef.current = null;
+    }
+  }, []);
+
+  const resetRoundState = useCallback(() => {
+    clearProgressInterval();
+    clearResultTimer();
+    selectionLockedRef.current = false;
+    setCurrentTilt('center');
+    setTiltProgress(0);
+    setLastResult(null);
+  }, [clearProgressInterval, clearResultTimer]);
+
+  const handleSelection = useCallback(
+    (option: QuestionOption) => {
+      if (gameState !== 'PLAYING' || selectionLockedRef.current || !currentQuestion) {
+        return;
+      }
+
+      selectionLockedRef.current = true;
+      clearProgressInterval();
+      setCurrentTilt('center');
+
+      const isCorrect = option === currentQuestion.correctOption;
+      setLastResult({ correct: isCorrect, option });
+      setGameState('RESULT');
+
+      if (isCorrect) {
+        setStats((previousStats) => ({
+          ...previousStats,
+          score: previousStats.score + 1
+        }));
+      }
+
+      clearResultTimer();
+      resultTimerRef.current = setTimeout(() => {
+        const nextQuestionIndex = stats.currentQuestionIndex + 1;
+
+        if (nextQuestionIndex < activeLesson.questions.length) {
+          setStats((previousStats) => ({
+            ...previousStats,
+            currentQuestionIndex: previousStats.currentQuestionIndex + 1
+          }));
+          setGameState('PLAYING');
+          setLastResult(null);
+          setTiltProgress(0);
+          selectionLockedRef.current = false;
+        } else {
+          setGameState('END');
+        }
+      }, RESULT_DELAY_MS);
+    },
+    [
+      activeLesson.questions.length,
+      clearProgressInterval,
+      clearResultTimer,
+      currentQuestion,
+      gameState,
+      stats.currentQuestionIndex
+    ]
+  );
+
+  const handleTilt = useCallback((tilt: TiltDirection) => {
+    if (selectionLockedRef.current) {
+      return;
+    }
+
     setCurrentTilt(tilt);
   }, []);
 
   useEffect(() => {
     if (gameState !== 'PLAYING') {
+      clearProgressInterval();
       setTiltProgress(0);
-      if (tiltTimerRef.current) clearTimeout(tiltTimerRef.current);
-      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
       return;
     }
 
     if (currentTilt === 'center') {
+      clearProgressInterval();
       setTiltProgress(0);
-      if (tiltTimerRef.current) clearTimeout(tiltTimerRef.current);
-      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
-    } else {
-      // Start progress
-      const startTime = Date.now();
-      const duration = 1000; // 1 second hold
-
-      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
-      progressIntervalRef.current = setInterval(() => {
-        const elapsed = Date.now() - startTime;
-        const progress = Math.min((elapsed / duration) * 100, 100);
-        setTiltProgress(progress);
-        
-        if (progress >= 100) {
-          clearInterval(progressIntervalRef.current!);
-          handleSelection(currentTilt as 'left' | 'right');
-        }
-      }, 50);
+      return;
     }
+
+    const selectedTilt: QuestionOption = currentTilt;
+    const startTime = Date.now();
+    clearProgressInterval();
+
+    progressIntervalRef.current = setInterval(() => {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min((elapsed / TILT_HOLD_DURATION_MS) * 100, 100);
+      setTiltProgress(progress);
+
+      if (progress >= 100) {
+        clearProgressInterval();
+        handleSelection(selectedTilt);
+      }
+    }, 50);
 
     return () => {
-      if (tiltTimerRef.current) clearTimeout(tiltTimerRef.current);
-      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+      clearProgressInterval();
     };
-  }, [currentTilt, gameState]);
+  }, [clearProgressInterval, currentTilt, gameState, handleSelection]);
 
-  const handleSelection = (option: 'left' | 'right') => {
-    const isCorrect = option === currentQuestion.correctOption;
-    
-    setLastResult({ correct: isCorrect, option });
-    setGameState('RESULT');
+  const updateQuestion = (id: number, updates: Partial<Omit<Question, 'id'>>) => {
+    setLessonDraft((previousLesson) => ({
+      ...previousLesson,
+      questions: previousLesson.questions.map((question) =>
+        question.id === id ? { ...question, ...updates } : question
+      )
+    }));
+  };
 
-    if (isCorrect) {
-      setStats(prev => ({ ...prev, score: prev.score + 1 }));
-    }
+  const addQuestion = () => {
+    setLessonDraft((previousLesson) => ({
+      ...previousLesson,
+      questions: [
+        ...previousLesson.questions,
+        createBlankQuestion(getNextQuestionId(previousLesson.questions))
+      ]
+    }));
+  };
 
-    // Wait 2 seconds then next question or end
-    setTimeout(() => {
-      if (stats.currentQuestionIndex + 1 < QUESTIONS.length) {
-        setStats(prev => ({ ...prev, currentQuestionIndex: prev.currentQuestionIndex + 1 }));
-        setGameState('PLAYING');
-        setLastResult(null);
-        setTiltProgress(0);
-      } else {
-        setGameState('END');
+  const removeQuestion = (id: number) => {
+    setLessonDraft((previousLesson) => {
+      if (previousLesson.questions.length === 1) {
+        return previousLesson;
       }
-    }, 2000);
+
+      return {
+        ...previousLesson,
+        questions: previousLesson.questions.filter((question) => question.id !== id)
+      };
+    });
   };
 
   const startGame = () => {
+    const nextLesson = cloneLesson(lessonDraft);
+
+    if (!isLessonReady(nextLesson)) {
+      return;
+    }
+
+    resetRoundState();
+    setActiveLesson(nextLesson);
     setStats({
       score: 0,
-      totalQuestions: QUESTIONS.length,
+      totalQuestions: nextLesson.questions.length,
       currentQuestionIndex: 0
     });
     setGameState('PLAYING');
-    setLastResult(null);
-    setTiltProgress(0);
   };
 
   const resetGame = () => {
+    resetRoundState();
+    setStats({
+      score: 0,
+      totalQuestions: lessonDraft.questions.length,
+      currentQuestionIndex: 0
+    });
     setGameState('START');
   };
 
+  const restoreDefaultLesson = () => {
+    setLessonDraft(cloneLesson(DEFAULT_LESSON));
+  };
+
+  const validationMessage =
+    lessonDraft.title.trim().length === 0
+      ? 'Hay dat ten cho bai hoc truoc khi bat dau.'
+      : lessonDraft.questions.some((question) => question.text.trim().length === 0)
+        ? 'Moi cau hoi can co noi dung.'
+        : lessonDraft.questions.some(
+              (question) =>
+                question.leftOption.trim().length === 0 ||
+                question.rightOption.trim().length === 0
+            )
+          ? 'Moi cau hoi can du hai dap an.'
+          : '';
+
+  const canStartGame = isLessonReady(lessonDraft);
+
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-white font-sans selection:bg-emerald-500/30 overflow-hidden flex flex-col items-center justify-center p-4">
-      {/* Background Atmosphere */}
+    <div className="min-h-screen bg-[#0a0a0a] text-white font-sans selection:bg-emerald-500/30 overflow-x-hidden">
       <div className="fixed inset-0 pointer-events-none">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-emerald-500/10 blur-[120px] rounded-full" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-blue-500/10 blur-[120px] rounded-full" />
+        <div className="absolute top-[-10%] left-[-10%] h-[40%] w-[40%] rounded-full bg-emerald-500/10 blur-[120px]" />
+        <div className="absolute bottom-[-10%] right-[-10%] h-[40%] w-[40%] rounded-full bg-blue-500/10 blur-[120px]" />
       </div>
 
-      <div className="relative z-10 w-full max-w-4xl flex flex-col gap-8">
-        {/* Header */}
-        <div className="text-center space-y-2">
-          <motion.h1 
+      <div className="relative z-10 mx-auto flex w-full max-w-6xl flex-col gap-8 px-4 py-6 md:px-6 md:py-10">
+        <div className="space-y-3 text-center">
+          <motion.h1
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
-            className="text-4xl md:text-6xl font-black tracking-tighter uppercase italic"
+            className="text-4xl font-black uppercase italic tracking-tighter md:text-6xl"
           >
             Head Tilt <span className="text-emerald-500">Quiz</span>
           </motion.h1>
-          <p className="text-white/50 text-sm font-mono tracking-widest uppercase">Nghiêng đầu để chọn đáp án</p>
+          <div className="flex flex-col items-center gap-2">
+            <p className="font-mono text-sm uppercase tracking-[0.35em] text-white/60">
+              Nghieng dau de chon dap an
+            </p>
+            {(gameState === 'PLAYING' || gameState === 'RESULT' || gameState === 'END') && (
+              <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-4 py-2 font-mono text-xs uppercase tracking-[0.25em] text-emerald-200">
+                <BookOpen className="h-4 w-4" />
+                {activeLesson.title}
+              </div>
+            )}
+          </div>
         </div>
 
         <AnimatePresence mode="wait">
           {gameState === 'START' && (
-            <motion.div 
+            <motion.div
               key="start"
-              initial={{ opacity: 0, scale: 0.9 }}
+              initial={{ opacity: 0, scale: 0.98 }}
               animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 1.1 }}
-              className="bg-white/5 border border-white/10 backdrop-blur-xl rounded-3xl p-8 md:p-12 text-center space-y-8"
+              exit={{ opacity: 0, scale: 1.02 }}
+              className="space-y-8 rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl md:p-8"
             >
-              <div className="flex justify-center">
-                <div className="w-24 h-24 bg-emerald-500/20 rounded-full flex items-center justify-center border-2 border-emerald-500/50">
-                  <Camera className="w-10 h-10 text-emerald-500" />
+              <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-emerald-500/40 bg-emerald-500/20">
+                      <BookOpen className="h-7 w-7 text-emerald-400" />
+                    </div>
+                    <div>
+                      <h2 className="text-2xl font-black uppercase tracking-tight md:text-3xl">
+                        Tao bai hoc
+                      </h2>
+                      <p className="text-sm text-white/55">
+                        Dat ten bai hoc, them cau hoi va 2 dap an trai/phai ngay tren man hinh nay.
+                      </p>
+                    </div>
+                  </div>
+
+                  <label className="block space-y-2">
+                    <span className="font-mono text-xs uppercase tracking-[0.3em] text-white/50">
+                      Ten bai hoc
+                    </span>
+                    <input
+                      value={lessonDraft.title}
+                      onChange={(event) =>
+                        setLessonDraft((previousLesson) => ({
+                          ...previousLesson,
+                          title: event.target.value
+                        }))
+                      }
+                      placeholder="Vi du: Toan lop 1"
+                      className="w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition focus:border-emerald-400/60 focus:bg-black/50"
+                    />
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-1">
+                  <div className="flex items-start gap-3 rounded-2xl border border-white/5 bg-white/5 p-4">
+                    <Camera className="mt-0.5 h-5 w-5 shrink-0 text-blue-400" />
+                    <p className="text-sm text-white/70">
+                      Camera da bo che do lat ngang. Nghieng trai/phai se khop voi huong nguoi choi.
+                    </p>
+                  </div>
+                  <div className="flex items-start gap-3 rounded-2xl border border-white/5 bg-white/5 p-4">
+                    <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-emerald-400" />
+                    <p className="text-sm text-white/70">
+                      Giu tu the nghieng trong 1 giay de xac nhan dap an. Cau hinh bai hoc duoc luu tu dong trong trinh duyet.
+                    </p>
+                  </div>
                 </div>
               </div>
+
               <div className="space-y-4">
-                <h2 className="text-2xl font-bold">Sẵn sàng chưa?</h2>
-                <p className="text-white/60 max-w-md mx-auto">
-                  Trò chơi sẽ sử dụng camera để theo dõi chuyển động đầu của bạn. Nghiêng sang trái hoặc phải để chọn đáp án tương ứng.
-                </p>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-left max-w-lg mx-auto">
-                <div className="bg-white/5 p-4 rounded-xl border border-white/5 flex items-start gap-3">
-                  <AlertCircle className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
-                  <p className="text-xs text-white/70">Đảm bảo khuôn mặt của bạn nằm trong khung hình và đủ ánh sáng.</p>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="text-xl font-bold">Danh sach cau hoi</h3>
+                    <p className="text-sm text-white/50">
+                      Moi cau hoi co 2 dap an va chon ro dap an dung.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      onClick={addQuestion}
+                      className="flex items-center gap-2 rounded-full bg-emerald-500 px-4 py-2 text-sm font-bold uppercase tracking-wider text-black transition hover:bg-emerald-400"
+                    >
+                      <Plus className="h-4 w-4" />
+                      Them cau hoi
+                    </button>
+                    <button
+                      type="button"
+                      onClick={restoreDefaultLesson}
+                      className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-bold uppercase tracking-wider text-white transition hover:bg-white/10"
+                    >
+                      Khoi phuc mau
+                    </button>
+                  </div>
                 </div>
-                <div className="bg-white/5 p-4 rounded-xl border border-white/5 flex items-start gap-3">
-                  <AlertCircle className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
-                  <p className="text-xs text-white/70">Giữ tư thế nghiêng trong 1 giây để xác nhận lựa chọn.</p>
+
+                <div className="max-h-[48rem] space-y-4 overflow-y-auto pr-1">
+                  {lessonDraft.questions.map((question, index) => (
+                    <div
+                      key={question.id}
+                      className="space-y-4 rounded-3xl border border-white/10 bg-black/20 p-5"
+                    >
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white/10 font-black">
+                            {index + 1}
+                          </div>
+                          <div>
+                            <p className="font-bold">Cau hoi {index + 1}</p>
+                            <p className="font-mono text-xs uppercase tracking-[0.25em] text-white/35">
+                              Chon dap an dung bang nghieng dau
+                            </p>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => removeQuestion(question.id)}
+                          disabled={lessonDraft.questions.length === 1}
+                          className="inline-flex items-center gap-2 rounded-full border border-red-400/20 px-4 py-2 text-sm font-semibold text-red-200 transition hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          Xoa cau hoi
+                        </button>
+                      </div>
+
+                      <label className="block space-y-2">
+                        <span className="font-mono text-xs uppercase tracking-[0.3em] text-white/50">
+                          Noi dung cau hoi
+                        </span>
+                        <textarea
+                          value={question.text}
+                          onChange={(event) => updateQuestion(question.id, { text: event.target.value })}
+                          rows={3}
+                          placeholder="Nhap cau hoi..."
+                          className="w-full resize-y rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition focus:border-emerald-400/60 focus:bg-black/50"
+                        />
+                      </label>
+
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                        <label className="block space-y-2">
+                          <span className="font-mono text-xs uppercase tracking-[0.3em] text-white/50">
+                            Dap an trai
+                          </span>
+                          <input
+                            value={question.leftOption}
+                            onChange={(event) =>
+                              updateQuestion(question.id, { leftOption: event.target.value })
+                            }
+                            placeholder="Lua chon khi nghieng trai"
+                            className="w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition focus:border-emerald-400/60 focus:bg-black/50"
+                          />
+                        </label>
+
+                        <label className="block space-y-2">
+                          <span className="font-mono text-xs uppercase tracking-[0.3em] text-white/50">
+                            Dap an phai
+                          </span>
+                          <input
+                            value={question.rightOption}
+                            onChange={(event) =>
+                              updateQuestion(question.id, { rightOption: event.target.value })
+                            }
+                            placeholder="Lua chon khi nghieng phai"
+                            className="w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition focus:border-emerald-400/60 focus:bg-black/50"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="space-y-2">
+                        <span className="font-mono text-xs uppercase tracking-[0.3em] text-white/50">
+                          Dap an dung
+                        </span>
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <button
+                            type="button"
+                            onClick={() => updateQuestion(question.id, { correctOption: 'left' })}
+                            className={`rounded-2xl border px-4 py-3 text-left transition ${
+                              question.correctOption === 'left'
+                                ? 'border-emerald-400 bg-emerald-500/15 text-emerald-100'
+                                : 'border-white/10 bg-white/5 text-white/75 hover:bg-white/10'
+                            }`}
+                          >
+                            <span className="block font-mono text-xs uppercase tracking-[0.3em] opacity-70">
+                              Nghieng trai
+                            </span>
+                            <span className="mt-1 block font-semibold">
+                              {question.leftOption.trim() || 'Chua nhap dap an trai'}
+                            </span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => updateQuestion(question.id, { correctOption: 'right' })}
+                            className={`rounded-2xl border px-4 py-3 text-left transition ${
+                              question.correctOption === 'right'
+                                ? 'border-emerald-400 bg-emerald-500/15 text-emerald-100'
+                                : 'border-white/10 bg-white/5 text-white/75 hover:bg-white/10'
+                            }`}
+                          >
+                            <span className="block font-mono text-xs uppercase tracking-[0.3em] opacity-70">
+                              Nghieng phai
+                            </span>
+                            <span className="mt-1 block font-semibold">
+                              {question.rightOption.trim() || 'Chua nhap dap an phai'}
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
-              <button 
-                onClick={startGame}
-                className="group relative px-12 py-4 bg-emerald-500 hover:bg-emerald-400 text-black font-black uppercase tracking-widest rounded-full transition-all hover:scale-105 active:scale-95 flex items-center gap-3 mx-auto"
-              >
-                <Play className="w-5 h-5 fill-current" />
-                Bắt đầu ngay
-              </button>
+
+              <div className="flex flex-col gap-4 border-t border-white/10 pt-6">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="text-sm text-white/55">
+                    {lessonDraft.questions.length} cau hoi san sang cho bai hoc nay.
+                  </div>
+                  {validationMessage && (
+                    <div className="rounded-full border border-amber-500/20 bg-amber-500/10 px-4 py-2 text-sm text-amber-200">
+                      {validationMessage}
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  onClick={startGame}
+                  disabled={!canStartGame}
+                  className="flex items-center justify-center gap-3 rounded-full bg-emerald-500 px-12 py-4 font-black uppercase tracking-widest text-black transition-all hover:scale-[1.02] hover:bg-emerald-400 active:scale-95 disabled:bg-white/10 disabled:text-white/35 disabled:hover:bg-white/10"
+                >
+                  <Play className="h-5 w-5 fill-current" />
+                  Bat dau bai hoc
+                </button>
+              </div>
             </motion.div>
           )}
 
-          {(gameState === 'PLAYING' || gameState === 'RESULT') && (
-            <motion.div 
+          {(gameState === 'PLAYING' || gameState === 'RESULT') && currentQuestion && (
+            <motion.div
               key="playing"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               className="space-y-8"
             >
-              {/* Question Card */}
-              <div className="bg-white/5 border border-white/10 backdrop-blur-xl rounded-3xl p-8 text-center relative overflow-hidden">
-                <div className="absolute top-0 left-0 w-full h-1 bg-white/10">
-                  <motion.div 
+              <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-white/5 p-8 text-center backdrop-blur-xl">
+                <div className="absolute left-0 top-0 h-1 w-full bg-white/10">
+                  <motion.div
                     className="h-full bg-emerald-500"
                     initial={{ width: 0 }}
-                    animate={{ width: `${((stats.currentQuestionIndex + 1) / stats.totalQuestions) * 100}%` }}
+                    animate={{
+                      width: `${((stats.currentQuestionIndex + 1) / stats.totalQuestions) * 100}%`
+                    }}
                   />
                 </div>
-                <div className="mb-4 text-emerald-500 font-mono text-sm font-bold">
-                  CÂU HỎI {stats.currentQuestionIndex + 1} / {stats.totalQuestions}
+                <div className="mb-3 font-mono text-sm font-bold uppercase tracking-[0.3em] text-emerald-500">
+                  Cau hoi {stats.currentQuestionIndex + 1} / {stats.totalQuestions}
                 </div>
-                <h2 className="text-2xl md:text-3xl font-bold leading-tight">
-                  {currentQuestion.text}
-                </h2>
+                <div className="mb-4 font-mono text-xs uppercase tracking-[0.25em] text-white/45">
+                  {activeLesson.title}
+                </div>
+                <h2 className="text-2xl font-bold leading-tight md:text-3xl">{currentQuestion.text}</h2>
               </div>
 
-              {/* Game View */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center">
-                {/* Left Option */}
+              <div className="grid grid-cols-1 items-center gap-6 md:grid-cols-3">
                 <div className="order-2 md:order-1">
-                  <motion.div 
-                    animate={{ 
+                  <motion.div
+                    animate={{
                       scale: currentTilt === 'left' ? 1.05 : 1,
-                      backgroundColor: currentTilt === 'left' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(255, 255, 255, 0.05)',
-                      borderColor: currentTilt === 'left' ? 'rgba(16, 185, 129, 0.5)' : 'rgba(255, 255, 255, 0.1)'
+                      backgroundColor:
+                        currentTilt === 'left'
+                          ? 'rgba(16, 185, 129, 0.2)'
+                          : 'rgba(255, 255, 255, 0.05)',
+                      borderColor:
+                        currentTilt === 'left'
+                          ? 'rgba(16, 185, 129, 0.5)'
+                          : 'rgba(255, 255, 255, 0.1)'
                     }}
-                    className={`p-6 rounded-2xl border-2 text-center transition-colors relative overflow-hidden h-32 flex flex-col items-center justify-center gap-2`}
+                    className="relative flex min-h-40 flex-col items-center justify-center gap-3 overflow-hidden rounded-2xl border-2 p-6 text-center transition-colors"
                   >
                     {lastResult && lastResult.option === 'left' && (
-                      <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-sm z-10">
-                        {lastResult.correct ? <CheckCircle2 className="w-12 h-12 text-emerald-500" /> : <XCircle className="w-12 h-12 text-red-500" />}
+                      <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+                        {lastResult.correct ? (
+                          <CheckCircle2 className="h-12 w-12 text-emerald-500" />
+                        ) : (
+                          <XCircle className="h-12 w-12 text-red-500" />
+                        )}
                       </div>
                     )}
-                    <span className="text-white/40 text-[10px] uppercase font-mono tracking-widest">Nghiêng Trái</span>
-                    <span className="text-xl font-black uppercase tracking-tight">{currentQuestion.leftOption}</span>
-                    
+                    <span className="font-mono text-[10px] uppercase tracking-widest text-white/40">
+                      Nghieng trai
+                    </span>
+                    <span className="break-words text-lg font-black uppercase tracking-tight md:text-xl">
+                      {currentQuestion.leftOption}
+                    </span>
+
                     {currentTilt === 'left' && gameState === 'PLAYING' && (
-                      <div className="absolute bottom-0 left-0 h-1 bg-emerald-500 transition-all" style={{ width: `${tiltProgress}%` }} />
+                      <div
+                        className="absolute bottom-0 left-0 h-1 bg-emerald-500 transition-all"
+                        style={{ width: `${tiltProgress}%` }}
+                      />
                     )}
                   </motion.div>
                 </div>
 
-                {/* Camera Feed */}
                 <div className="order-1 md:order-2">
                   <HeadTracker onTilt={handleTilt} isActive={gameState === 'PLAYING'} />
                 </div>
 
-                {/* Right Option */}
                 <div className="order-3">
-                  <motion.div 
-                    animate={{ 
+                  <motion.div
+                    animate={{
                       scale: currentTilt === 'right' ? 1.05 : 1,
-                      backgroundColor: currentTilt === 'right' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(255, 255, 255, 0.05)',
-                      borderColor: currentTilt === 'right' ? 'rgba(16, 185, 129, 0.5)' : 'rgba(255, 255, 255, 0.1)'
+                      backgroundColor:
+                        currentTilt === 'right'
+                          ? 'rgba(16, 185, 129, 0.2)'
+                          : 'rgba(255, 255, 255, 0.05)',
+                      borderColor:
+                        currentTilt === 'right'
+                          ? 'rgba(16, 185, 129, 0.5)'
+                          : 'rgba(255, 255, 255, 0.1)'
                     }}
-                    className={`p-6 rounded-2xl border-2 text-center transition-colors relative overflow-hidden h-32 flex flex-col items-center justify-center gap-2`}
+                    className="relative flex min-h-40 flex-col items-center justify-center gap-3 overflow-hidden rounded-2xl border-2 p-6 text-center transition-colors"
                   >
                     {lastResult && lastResult.option === 'right' && (
-                      <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-sm z-10">
-                        {lastResult.correct ? <CheckCircle2 className="w-12 h-12 text-emerald-500" /> : <XCircle className="w-12 h-12 text-red-500" />}
+                      <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+                        {lastResult.correct ? (
+                          <CheckCircle2 className="h-12 w-12 text-emerald-500" />
+                        ) : (
+                          <XCircle className="h-12 w-12 text-red-500" />
+                        )}
                       </div>
                     )}
-                    <span className="text-white/40 text-[10px] uppercase font-mono tracking-widest">Nghiêng Phải</span>
-                    <span className="text-xl font-black uppercase tracking-tight">{currentQuestion.rightOption}</span>
+                    <span className="font-mono text-[10px] uppercase tracking-widest text-white/40">
+                      Nghieng phai
+                    </span>
+                    <span className="break-words text-lg font-black uppercase tracking-tight md:text-xl">
+                      {currentQuestion.rightOption}
+                    </span>
 
                     {currentTilt === 'right' && gameState === 'PLAYING' && (
-                      <div className="absolute bottom-0 left-0 h-1 bg-emerald-500 transition-all" style={{ width: `${tiltProgress}%` }} />
+                      <div
+                        className="absolute bottom-0 left-0 h-1 bg-emerald-500 transition-all"
+                        style={{ width: `${tiltProgress}%` }}
+                      />
                     )}
                   </motion.div>
                 </div>
               </div>
 
-              {/* Score Display */}
               <div className="flex justify-center">
-                <div className="bg-white/5 px-6 py-2 rounded-full border border-white/10 flex items-center gap-4">
+                <div className="flex items-center gap-4 rounded-full border border-white/10 bg-white/5 px-6 py-2">
                   <div className="flex items-center gap-2">
-                    <Trophy className="w-4 h-4 text-yellow-500" />
+                    <Trophy className="h-4 w-4 text-yellow-500" />
                     <span className="font-mono font-bold">{stats.score}</span>
                   </div>
-                  <div className="w-px h-4 bg-white/10" />
-                  <div className="text-xs text-white/50 uppercase tracking-widest font-mono">
-                    Đúng {Math.round((stats.score / stats.totalQuestions) * 100)}%
+                  <div className="h-4 w-px bg-white/10" />
+                  <div className="font-mono text-xs uppercase tracking-widest text-white/50">
+                    Dung {Math.round((stats.score / stats.totalQuestions) * 100)}%
                   </div>
                 </div>
               </div>
@@ -258,41 +703,46 @@ export default function App() {
           )}
 
           {gameState === 'END' && (
-            <motion.div 
+            <motion.div
               key="end"
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
-              className="bg-white/5 border border-white/10 backdrop-blur-xl rounded-3xl p-12 text-center space-y-8"
+              className="space-y-8 rounded-3xl border border-white/10 bg-white/5 p-8 text-center backdrop-blur-xl md:p-12"
             >
-              <div className="space-y-2">
-                <Trophy className="w-16 h-16 text-yellow-500 mx-auto" />
-                <h2 className="text-4xl font-black uppercase italic">Kết quả cuối cùng</h2>
+              <div className="space-y-3">
+                <Trophy className="mx-auto h-16 w-16 text-yellow-500" />
+                <h2 className="text-4xl font-black uppercase italic">Ket qua cuoi cung</h2>
+                <p className="text-white/50">{activeLesson.title}</p>
               </div>
-              
-              <div className="flex justify-center gap-12">
+
+              <div className="flex flex-col justify-center gap-8 sm:flex-row sm:gap-12">
                 <div className="text-center">
                   <div className="text-5xl font-black text-emerald-500">{stats.score}</div>
-                  <div className="text-xs text-white/40 uppercase tracking-widest font-mono mt-2">Điểm số</div>
+                  <div className="mt-2 font-mono text-xs uppercase tracking-widest text-white/40">
+                    Diem so
+                  </div>
                 </div>
                 <div className="text-center">
                   <div className="text-5xl font-black text-white">{stats.totalQuestions}</div>
-                  <div className="text-xs text-white/40 uppercase tracking-widest font-mono mt-2">Tổng câu</div>
+                  <div className="mt-2 font-mono text-xs uppercase tracking-widest text-white/40">
+                    Tong cau
+                  </div>
                 </div>
               </div>
 
               <div className="space-y-4">
-                <button 
+                <button
                   onClick={startGame}
-                  className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 text-black font-black uppercase tracking-widest rounded-xl transition-all flex items-center justify-center gap-3"
+                  className="flex w-full items-center justify-center gap-3 rounded-xl bg-emerald-500 py-4 font-black uppercase tracking-widest text-black transition-all hover:bg-emerald-400"
                 >
-                  <RotateCcw className="w-5 h-5" />
-                  Chơi lại
+                  <RotateCcw className="h-5 w-5" />
+                  Choi lai bai hoc nay
                 </button>
-                <button 
+                <button
                   onClick={resetGame}
-                  className="w-full py-4 bg-white/5 hover:bg-white/10 text-white font-black uppercase tracking-widest rounded-xl border border-white/10 transition-all"
+                  className="w-full rounded-xl border border-white/10 bg-white/5 py-4 font-black uppercase tracking-widest text-white transition-all hover:bg-white/10"
                 >
-                  Về màn hình chính
+                  Quay ve chinh sua bai hoc
                 </button>
               </div>
             </motion.div>
