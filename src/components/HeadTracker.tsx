@@ -47,7 +47,7 @@ const HeadTracker: React.FC<HeadTrackerProps> = ({ onTilt, isActive }) => {
       } catch (error) {
         console.error('Error loading face landmarker:', error);
         if (!disposed) {
-          setCameraError('Khong tai duoc bo nhan dien khuon mat.');
+          setCameraError('Không tải được bộ nhận diện khuôn mặt.');
         }
       }
     };
@@ -153,7 +153,7 @@ const HeadTracker: React.FC<HeadTrackerProps> = ({ onTilt, isActive }) => {
       } catch (error) {
         console.error('Error accessing camera:', error);
         if (!cancelled) {
-          setCameraError('Khong truy cap duoc camera. Hay kiem tra quyen trinh duyet.');
+          setCameraError('Không truy cập được camera. Hãy kiểm tra quyền trình duyệt.');
         }
       }
     };
@@ -172,7 +172,7 @@ const HeadTracker: React.FC<HeadTrackerProps> = ({ onTilt, isActive }) => {
         <div className="absolute inset-0 flex items-center justify-center text-white font-medium">
           <div className="flex flex-col items-center gap-3">
             <div className="w-8 h-8 border-4 border-white/20 border-t-white rounded-full animate-spin" />
-            <p>Dang tai camera...</p>
+            <p>Đang tải camera...</p>
           </div>
         </div>
       )}
@@ -235,7 +235,7 @@ const HeadTracker: React.FC<HeadTrackerProps> = ({ onTilt, isActive }) => {
 
       {isLoaded && !cameraError && (
         <div className="absolute top-4 left-4 px-3 py-1 bg-black/50 backdrop-blur-md rounded-full text-[10px] text-white/70 uppercase tracking-widest font-mono">
-          Camera Active
+          Camera đang bật
         </div>
       )}
     </div>

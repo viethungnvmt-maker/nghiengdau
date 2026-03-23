@@ -19,6 +19,17 @@ import { GameState, GameStats, Lesson, Question, QuestionOption, TiltDirection }
 const LESSON_STORAGE_KEY = 'head-tilt-quiz-lesson';
 const TILT_HOLD_DURATION_MS = 1000;
 const RESULT_DELAY_MS = 2000;
+const LEGACY_TEXT_MAP: Record<string, string> = {
+  'Bai hoc tong hop': 'Bài học tổng hợp',
+  'Thu do cua Viet Nam la gi?': 'Thủ đô của Việt Nam là gì?',
+  'Ha Noi': 'Hà Nội',
+  '2 + 2 bang may?': '2 + 2 bằng mấy?',
+  "Con vat nao keu 'gau gau'?": "Con vật nào kêu 'gâu gâu'?",
+  Meo: 'Mèo',
+  Cho: 'Chó'
+};
+
+const migrateLegacyText = (value: string) => LEGACY_TEXT_MAP[value] ?? value;
 
 const cloneLesson = (lesson: Lesson): Lesson => ({
   title: lesson.title,
@@ -43,9 +54,9 @@ const normalizeStoredQuestion = (value: unknown, index: number): Question => {
 
   return {
     id: typeof record.id === 'number' && Number.isFinite(record.id) ? record.id : index + 1,
-    text: typeof record.text === 'string' ? record.text : '',
-    leftOption: typeof record.leftOption === 'string' ? record.leftOption : '',
-    rightOption: typeof record.rightOption === 'string' ? record.rightOption : '',
+    text: typeof record.text === 'string' ? migrateLegacyText(record.text) : '',
+    leftOption: typeof record.leftOption === 'string' ? migrateLegacyText(record.leftOption) : '',
+    rightOption: typeof record.rightOption === 'string' ? migrateLegacyText(record.rightOption) : '',
     correctOption: record.correctOption === 'right' ? 'right' : 'left'
   };
 };
@@ -67,7 +78,10 @@ const loadLessonDraft = (): Lesson => {
       : [];
 
     return {
-      title: typeof parsedLesson.title === 'string' ? parsedLesson.title : DEFAULT_LESSON.title,
+      title:
+        typeof parsedLesson.title === 'string'
+          ? migrateLegacyText(parsedLesson.title)
+          : DEFAULT_LESSON.title,
       questions: draftQuestions.length > 0 ? draftQuestions : cloneLesson(DEFAULT_LESSON).questions
     };
   } catch (error) {
@@ -304,15 +318,15 @@ export default function App() {
 
   const validationMessage =
     lessonDraft.title.trim().length === 0
-      ? 'Hay dat ten cho bai hoc truoc khi bat dau.'
+      ? 'Hãy đặt tên cho bài học trước khi bắt đầu.'
       : lessonDraft.questions.some((question) => question.text.trim().length === 0)
-        ? 'Moi cau hoi can co noi dung.'
+        ? 'Mỗi câu hỏi cần có nội dung.'
         : lessonDraft.questions.some(
               (question) =>
                 question.leftOption.trim().length === 0 ||
                 question.rightOption.trim().length === 0
             )
-          ? 'Moi cau hoi can du hai dap an.'
+          ? 'Mỗi câu hỏi cần đủ hai đáp án.'
           : '';
 
   const canStartGame = isLessonReady(lessonDraft);
@@ -335,7 +349,7 @@ export default function App() {
           </motion.h1>
           <div className="flex flex-col items-center gap-2">
             <p className="font-mono text-sm uppercase tracking-[0.35em] text-white/60">
-              Nghieng dau de chon dap an
+              Nghiêng đầu để chọn đáp án
             </p>
             {(gameState === 'PLAYING' || gameState === 'RESULT' || gameState === 'END') && (
               <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-4 py-2 font-mono text-xs uppercase tracking-[0.25em] text-emerald-200">
@@ -363,17 +377,17 @@ export default function App() {
                     </div>
                     <div>
                       <h2 className="text-2xl font-black uppercase tracking-tight md:text-3xl">
-                        Tao bai hoc
+                        Tạo bài học
                       </h2>
                       <p className="text-sm text-white/55">
-                        Dat ten bai hoc, them cau hoi va 2 dap an trai/phai ngay tren man hinh nay.
+                        Đặt tên bài học, thêm câu hỏi và 2 đáp án trái/phải ngay trên màn hình này.
                       </p>
                     </div>
                   </div>
 
                   <label className="block space-y-2">
                     <span className="font-mono text-xs uppercase tracking-[0.3em] text-white/50">
-                      Ten bai hoc
+                      Tên bài học
                     </span>
                     <input
                       value={lessonDraft.title}
@@ -383,7 +397,7 @@ export default function App() {
                           title: event.target.value
                         }))
                       }
-                      placeholder="Vi du: Toan lop 1"
+                      placeholder="Ví dụ: Toán lớp 1"
                       className="w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition focus:border-emerald-400/60 focus:bg-black/50"
                     />
                   </label>
@@ -393,13 +407,13 @@ export default function App() {
                   <div className="flex items-start gap-3 rounded-2xl border border-white/5 bg-white/5 p-4">
                     <Camera className="mt-0.5 h-5 w-5 shrink-0 text-blue-400" />
                     <p className="text-sm text-white/70">
-                      Camera da bo che do lat ngang. Nghieng trai/phai se khop voi huong nguoi choi.
+                      Camera đã hiển thị kiểu gương. Nghiêng trái/phải sẽ khớp với hướng người chơi.
                     </p>
                   </div>
                   <div className="flex items-start gap-3 rounded-2xl border border-white/5 bg-white/5 p-4">
                     <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-emerald-400" />
                     <p className="text-sm text-white/70">
-                      Giu tu the nghieng trong 1 giay de xac nhan dap an. Cau hinh bai hoc duoc luu tu dong trong trinh duyet.
+                      Giữ tư thế nghiêng trong 1 giây để xác nhận đáp án. Cấu hình bài học được lưu tự động trong trình duyệt.
                     </p>
                   </div>
                 </div>
@@ -410,7 +424,7 @@ export default function App() {
                   <div>
                     <h3 className="text-xl font-bold">Danh sach cau hoi</h3>
                     <p className="text-sm text-white/50">
-                      Moi cau hoi co 2 dap an va chon ro dap an dung.
+                      Mỗi câu hỏi có 2 đáp án và chọn rõ đáp án đúng.
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-3">
@@ -420,14 +434,14 @@ export default function App() {
                       className="flex items-center gap-2 rounded-full bg-emerald-500 px-4 py-2 text-sm font-bold uppercase tracking-wider text-black transition hover:bg-emerald-400"
                     >
                       <Plus className="h-4 w-4" />
-                      Them cau hoi
+                      Thêm câu hỏi
                     </button>
                     <button
                       type="button"
                       onClick={restoreDefaultLesson}
                       className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-bold uppercase tracking-wider text-white transition hover:bg-white/10"
                     >
-                      Khoi phuc mau
+                      Khôi phục mẫu
                     </button>
                   </div>
                 </div>
@@ -444,9 +458,9 @@ export default function App() {
                             {index + 1}
                           </div>
                           <div>
-                            <p className="font-bold">Cau hoi {index + 1}</p>
+                            <p className="font-bold">Câu hỏi {index + 1}</p>
                             <p className="font-mono text-xs uppercase tracking-[0.25em] text-white/35">
-                              Chon dap an dung bang nghieng dau
+                              Chọn đáp án đúng bằng nghiêng đầu
                             </p>
                           </div>
                         </div>
@@ -458,19 +472,19 @@ export default function App() {
                           className="inline-flex items-center gap-2 rounded-full border border-red-400/20 px-4 py-2 text-sm font-semibold text-red-200 transition hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-40"
                         >
                           <Trash2 className="h-4 w-4" />
-                          Xoa cau hoi
+                          Xóa câu hỏi
                         </button>
                       </div>
 
                       <label className="block space-y-2">
                         <span className="font-mono text-xs uppercase tracking-[0.3em] text-white/50">
-                          Noi dung cau hoi
+                          Nội dung câu hỏi
                         </span>
                         <textarea
                           value={question.text}
                           onChange={(event) => updateQuestion(question.id, { text: event.target.value })}
                           rows={3}
-                          placeholder="Nhap cau hoi..."
+                          placeholder="Nhập câu hỏi..."
                           className="w-full resize-y rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition focus:border-emerald-400/60 focus:bg-black/50"
                         />
                       </label>
@@ -478,28 +492,28 @@ export default function App() {
                       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                         <label className="block space-y-2">
                           <span className="font-mono text-xs uppercase tracking-[0.3em] text-white/50">
-                            Dap an trai
+                            Đáp án trái
                           </span>
                           <input
                             value={question.leftOption}
                             onChange={(event) =>
                               updateQuestion(question.id, { leftOption: event.target.value })
                             }
-                            placeholder="Lua chon khi nghieng trai"
+                            placeholder="Lựa chọn khi nghiêng trái"
                             className="w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition focus:border-emerald-400/60 focus:bg-black/50"
                           />
                         </label>
 
                         <label className="block space-y-2">
                           <span className="font-mono text-xs uppercase tracking-[0.3em] text-white/50">
-                            Dap an phai
+                            Đáp án phải
                           </span>
                           <input
                             value={question.rightOption}
                             onChange={(event) =>
                               updateQuestion(question.id, { rightOption: event.target.value })
                             }
-                            placeholder="Lua chon khi nghieng phai"
+                            placeholder="Lựa chọn khi nghiêng phải"
                             className="w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition focus:border-emerald-400/60 focus:bg-black/50"
                           />
                         </label>
@@ -507,7 +521,7 @@ export default function App() {
 
                       <div className="space-y-2">
                         <span className="font-mono text-xs uppercase tracking-[0.3em] text-white/50">
-                          Dap an dung
+                          Đáp án đúng
                         </span>
                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                           <button
@@ -520,10 +534,10 @@ export default function App() {
                             }`}
                           >
                             <span className="block font-mono text-xs uppercase tracking-[0.3em] opacity-70">
-                              Nghieng trai
+                              Nghiêng trái
                             </span>
                             <span className="mt-1 block font-semibold">
-                              {question.leftOption.trim() || 'Chua nhap dap an trai'}
+                              {question.leftOption.trim() || 'Chưa nhập đáp án trái'}
                             </span>
                           </button>
 
@@ -537,10 +551,10 @@ export default function App() {
                             }`}
                           >
                             <span className="block font-mono text-xs uppercase tracking-[0.3em] opacity-70">
-                              Nghieng phai
+                              Nghiêng phải
                             </span>
                             <span className="mt-1 block font-semibold">
-                              {question.rightOption.trim() || 'Chua nhap dap an phai'}
+                              {question.rightOption.trim() || 'Chưa nhập đáp án phải'}
                             </span>
                           </button>
                         </div>
@@ -553,7 +567,7 @@ export default function App() {
               <div className="flex flex-col gap-4 border-t border-white/10 pt-6">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div className="text-sm text-white/55">
-                    {lessonDraft.questions.length} cau hoi san sang cho bai hoc nay.
+                    {lessonDraft.questions.length} câu hỏi sẵn sàng cho bài học này.
                   </div>
                   {validationMessage && (
                     <div className="rounded-full border border-amber-500/20 bg-amber-500/10 px-4 py-2 text-sm text-amber-200">
@@ -568,7 +582,7 @@ export default function App() {
                   className="flex items-center justify-center gap-3 rounded-full bg-emerald-500 px-12 py-4 font-black uppercase tracking-widest text-black transition-all hover:scale-[1.02] hover:bg-emerald-400 active:scale-95 disabled:bg-white/10 disabled:text-white/35 disabled:hover:bg-white/10"
                 >
                   <Play className="h-5 w-5 fill-current" />
-                  Bat dau bai hoc
+                  Bắt đầu bài học
                 </button>
               </div>
             </motion.div>
@@ -593,7 +607,7 @@ export default function App() {
                   />
                 </div>
                 <div className="mb-3 font-mono text-sm font-bold uppercase tracking-[0.3em] text-emerald-500">
-                  Cau hoi {stats.currentQuestionIndex + 1} / {stats.totalQuestions}
+                  Câu hỏi {stats.currentQuestionIndex + 1} / {stats.totalQuestions}
                 </div>
                 <div className="mb-4 font-mono text-xs uppercase tracking-[0.25em] text-white/45">
                   {activeLesson.title}
@@ -627,7 +641,7 @@ export default function App() {
                       </div>
                     )}
                     <span className="font-mono text-[10px] uppercase tracking-widest text-white/40">
-                      Nghieng trai
+                      Nghiêng trái
                     </span>
                     <span className="break-words text-lg font-black uppercase tracking-tight md:text-xl">
                       {currentQuestion.leftOption}
@@ -671,7 +685,7 @@ export default function App() {
                       </div>
                     )}
                     <span className="font-mono text-[10px] uppercase tracking-widest text-white/40">
-                      Nghieng phai
+                      Nghiêng phải
                     </span>
                     <span className="break-words text-lg font-black uppercase tracking-tight md:text-xl">
                       {currentQuestion.rightOption}
@@ -695,7 +709,7 @@ export default function App() {
                   </div>
                   <div className="h-4 w-px bg-white/10" />
                   <div className="font-mono text-xs uppercase tracking-widest text-white/50">
-                    Dung {Math.round((stats.score / stats.totalQuestions) * 100)}%
+                    Đúng {Math.round((stats.score / stats.totalQuestions) * 100)}%
                   </div>
                 </div>
               </div>
@@ -711,7 +725,7 @@ export default function App() {
             >
               <div className="space-y-3">
                 <Trophy className="mx-auto h-16 w-16 text-yellow-500" />
-                <h2 className="text-4xl font-black uppercase italic">Ket qua cuoi cung</h2>
+                <h2 className="text-4xl font-black uppercase italic">Kết quả cuối cùng</h2>
                 <p className="text-white/50">{activeLesson.title}</p>
               </div>
 
@@ -719,13 +733,13 @@ export default function App() {
                 <div className="text-center">
                   <div className="text-5xl font-black text-emerald-500">{stats.score}</div>
                   <div className="mt-2 font-mono text-xs uppercase tracking-widest text-white/40">
-                    Diem so
+                    Điểm số
                   </div>
                 </div>
                 <div className="text-center">
                   <div className="text-5xl font-black text-white">{stats.totalQuestions}</div>
                   <div className="mt-2 font-mono text-xs uppercase tracking-widest text-white/40">
-                    Tong cau
+                    Tổng câu
                   </div>
                 </div>
               </div>
@@ -736,13 +750,13 @@ export default function App() {
                   className="flex w-full items-center justify-center gap-3 rounded-xl bg-emerald-500 py-4 font-black uppercase tracking-widest text-black transition-all hover:bg-emerald-400"
                 >
                   <RotateCcw className="h-5 w-5" />
-                  Choi lai bai hoc nay
+                  Chơi lại bài học này
                 </button>
                 <button
                   onClick={resetGame}
                   className="w-full rounded-xl border border-white/10 bg-white/5 py-4 font-black uppercase tracking-widest text-white transition-all hover:bg-white/10"
                 >
-                  Quay ve chinh sua bai hoc
+                  Quay về chỉnh sửa bài học
                 </button>
               </div>
             </motion.div>
