@@ -1,0 +1,5 @@
+{
+  "name": "Head Tilt Quiz",
+  "description": "A fun quiz game where you tilt your head left or right to select the correct answer using your camera.",
+  "requestFramePermissions": ["camera"]
+}
