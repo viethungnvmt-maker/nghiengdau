@@ -183,7 +183,7 @@ const HeadTracker: React.FC<HeadTrackerProps> = ({ onTilt, isActive }) => {
         </div>
       )}
 
-      <video ref={videoRef} className="w-full h-full object-cover" playsInline muted />
+      <video ref={videoRef} className="w-full h-full object-cover scale-x-[-1]" playsInline muted />
 
       {isLoaded && !cameraError && (
         <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
